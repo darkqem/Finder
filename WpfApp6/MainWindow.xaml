@@ -55,6 +55,7 @@
             <Setter Property="ScrollViewer.HorizontalScrollBarVisibility" Value="Disabled" />
             <Setter Property="ScrollViewer.VerticalScrollBarVisibility" Value="Auto" />
             <Setter Property="BorderBrush" Value="Transparent"/>
+            
             <!-- Add other setters as needed -->
         </Style>
     </Window.Resources>

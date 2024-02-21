@@ -17,6 +17,8 @@ using Stopwatch.Utility;
 using System.Text.RegularExpressions;
 using DotNetBungieAPI.Models.Requests;
 using System.Collections.Concurrent;
+using WpfApp6;
+using System.Windows.Threading;
 
 namespace WpfApp6
 {
@@ -35,7 +37,24 @@ namespace WpfApp6
             _suggestions.CollectionChanged += (s, e) => OnPropertyChanged(nameof(HasSuggestions));
             DataContext = this; // Set the DataContext to this instance
 
+
+            _debounceTimer = new DispatcherTimer
+            {
+                Interval = _searchDelay
+            };
+            _debounceTimer.Tick += DebounceTimer_Tick;
+
         }
+
+        private void DebounceTimer_Tick(object sender, EventArgs e)
+        {
+            // Stop the timer
+            _debounceTimer.Stop();
+
+            // Perform the search
+            SearchPlayers().ConfigureAwait(false);
+        }
+
         public bool HasSuggestions
         {
             get => _suggestions.Count > 0;
@@ -65,103 +84,90 @@ namespace WpfApp6
             PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(propertyName));
         }
 
+        private CancellationTokenSource _searchCancellationTokenSource;
+        private readonly TimeSpan _searchDelay = TimeSpan.FromSeconds(5);
+        private DispatcherTimer _debounceTimer;
+
 
         private async Task SearchPlayers()
         {
             if (!string.IsNullOrWhiteSpace(_searchTerm))
             {
+                // Clear the suggestions before starting new searches
+                Suggestions.Clear();
+
+                _searchCancellationTokenSource?.Cancel();
+                _searchCancellationTokenSource = new CancellationTokenSource();
 
 
-                // Create an instance of UserSearchPrefixRequest with the search term
-                var searchRequest = new DotNetBungieAPI.Models.Requests.UserSearchPrefixRequest(_searchTerm);
+                var resultsBag = new ConcurrentBag<PlayerSearchResult>();
+                // Use Task.Run to execute the search operations on separate threads
 
-                // Call the Bungie API to search for players
-                var response = await D2CharacterTracker.client.ApiAccess.User.SearchByGlobalNamePost(searchRequest);
-                // var respons1 = await D2CharacterTracker.client.ApiAccess.User.GetBungieNetUserById();
-
-
-                // Check if the response contains data and if so, access the collection property
-                if (response != null && response.Response != null || _searchTerm.Contains('#'))
+                var searchByExactBungieNameTask = Task.Run(async () =>
                 {
-                    var resultWithoutSharp = "";
+                    if (_searchCancellationTokenSource.Token.IsCancellationRequested) return;
 
-                    Suggestions.Clear();
                     if (_searchTerm.Contains('#'))
                     {
-                        StringBuilder lineBuilder = new StringBuilder();
-                        foreach (char c in _searchTerm)
+                        var validation = new Regex(@"(.+?)#(\d{1,4})");
+                        var match = validation.Match(_searchTerm);
+                        if (match.Success)
                         {
-                            if (c != '#')
-                            {
-                                lineBuilder.Append(c);
-                            }
-                            else
-                            {
-                                break;
-                            }
-
-                        }
-                        resultWithoutSharp = lineBuilder.ToString().Trim();
-
-                        Regex validation = new Regex(@"(.+?)#(\d{1,4})");
-                        var m = validation.Match(_searchTerm);
-                        if (m.Success)
-                        {
-                            var playerResult = await D2CharacterTracker.client.ApiAccess.Destiny2.SearchDestinyPlayerByBungieName(BungieMembershipType.All, new DotNetBungieAPI.Models.Requests.ExactSearchRequest() { DisplayName = m.Groups[1].Value, DisplayNameCode = short.Parse(m.Groups[2].Value) });
+                            var playerResult = await D2CharacterTracker.client.ApiAccess.Destiny2.SearchDestinyPlayerByBungieName(
+                                BungieMembershipType.All,
+                                new DotNetBungieAPI.Models.Requests.ExactSearchRequest()
+                                {
+                                    DisplayName = match.Groups[1].Value,
+                                    DisplayNameCode = short.Parse(match.Groups[2].Value)
+                                });
                             if (playerResult.Response != null && playerResult.Response.Count != 0)
                             {
-                                Suggestions.Add(new PlayerSearchResult
+                                resultsBag.Add(new PlayerSearchResult
                                 {
                                     DisplayName = playerResult.Response[0].BungieGlobalDisplayName + "#" + playerResult.Response[0].BungieGlobalDisplayNameCode,
-
                                     // Set other properties as needed
                                 });
                             }
-                            else
-                            {
-                                Suggestions.Clear();
-                                var searchRequestNew = new DotNetBungieAPI.Models.Requests.UserSearchPrefixRequest(resultWithoutSharp);
-                                response = await D2CharacterTracker.client.ApiAccess.User.SearchByGlobalNamePost(searchRequestNew);
-                                if (response != null && response.Response != null)
-                                {
-                                    var results = response.Response.SearchResults;
-                                    foreach (var result in results)
-                                    {
 
-                                        if (!Suggestions.Any(s => s.DisplayName == result.BungieGlobalDisplayName + "#" + result.BungieGlobalDisplayNameCode))
-                                        {
-                                            // If not, add the new result
-                                            Suggestions.Add(new PlayerSearchResult
-                                            {
-                                                DisplayName = result.BungieGlobalDisplayName + "#" + result.BungieGlobalDisplayNameCode,
-                                                // Set other properties as needed
-                                            });
-                                        }
-
-                                    }
-                                }
-                            }
                         }
                     }
-                    else if (response != null && response.Response != null)
+
+                }, _searchCancellationTokenSource.Token);
+
+                var searchByGlobalNamePostTask = Task.Run(async () =>
+                {
+                    if (_searchCancellationTokenSource.Token.IsCancellationRequested) return;
+
+
+
+                    var searchRequest = new DotNetBungieAPI.Models.Requests.UserSearchPrefixRequest(_searchTerm);
+                    var response = await D2CharacterTracker.client.ApiAccess.User.SearchByGlobalNamePost(searchRequest);
+                    if (response != null && response.Response != null)
                     {
                         var results = response.Response.SearchResults;
                         foreach (var result in results)
                         {
-
-                            Suggestions.Add(new PlayerSearchResult
+                            resultsBag.Add(new PlayerSearchResult
                             {
                                 DisplayName = result.BungieGlobalDisplayName + "#" + result.BungieGlobalDisplayNameCode,
-
                                 // Set other properties as needed
-
                             });
-
                         }
                     }
+                }, _searchCancellationTokenSource.Token);
 
-                    //Совместить два поиска, чтобы одновременно выводило через SearchByGlobalNamePost и SearchDestinyPlayerByBungieName
-                    //Сделать нормальное оформление
+                await Task.WhenAll(searchByExactBungieNameTask, searchByGlobalNamePostTask);
+
+                var uniqueDisplayNames = new HashSet<string>();
+
+                // Add all results from the thread-safe collection to the Suggestions collection
+                foreach (var result in resultsBag)
+                {
+                    if (uniqueDisplayNames.Add(result.DisplayName))
+                    {
+                        // If not, add the result to the Suggestions collection
+                        Suggestions.Add(result);
+                    }
                 }
             }
             else
@@ -171,10 +177,20 @@ namespace WpfApp6
         }
 
 
-
-        private void SearchTextBox_TextChanged(object sender, TextChangedEventArgs e)
+        private async void SearchTextBox_TextChanged(object sender, TextChangedEventArgs e)
         {
-            // No need to do anything here since we're using two-way binding
+            // Cancel any previous searches that are still running
+            _searchCancellationTokenSource?.Cancel();
+            _searchCancellationTokenSource = new CancellationTokenSource();
+
+            // Wait for the user to stop typing for the specified delay
+            await Task.Delay(_searchDelay, _searchCancellationTokenSource.Token);
+
+            // If the task was not canceled, start the search
+            if (!_searchCancellationTokenSource.Token.IsCancellationRequested)
+            {
+                await SearchPlayers();
+            }
         }
     }
 
@@ -185,5 +201,6 @@ namespace WpfApp6
         // Add other properties as needed
     }
 }
+
 
 
