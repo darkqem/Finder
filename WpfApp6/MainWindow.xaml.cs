@@ -96,6 +96,10 @@ namespace WpfApp6
                 // Clear the suggestions before starting new searches
                 Suggestions.Clear();
 
+
+                var validation = new Regex(@"(.+?)#(\d{1,4})");
+                var match = validation.Match(_searchTerm);
+
                 _searchCancellationTokenSource?.Cancel();
                 _searchCancellationTokenSource = new CancellationTokenSource();
 
@@ -107,30 +111,27 @@ namespace WpfApp6
                 {
                     if (_searchCancellationTokenSource.Token.IsCancellationRequested) return;
 
-                    if (_searchTerm.Contains('#'))
-                    {
-                        var validation = new Regex(@"(.+?)#(\d{1,4})");
-                        var match = validation.Match(_searchTerm);
-                        if (match.Success)
-                        {
-                            var playerResult = await D2CharacterTracker.client.ApiAccess.Destiny2.SearchDestinyPlayerByBungieName(
-                                BungieMembershipType.All,
-                                new DotNetBungieAPI.Models.Requests.ExactSearchRequest()
-                                {
-                                    DisplayName = match.Groups[1].Value,
-                                    DisplayNameCode = short.Parse(match.Groups[2].Value)
-                                });
-                            if (playerResult.Response != null && playerResult.Response.Count != 0)
-                            {
-                                resultsBag.Add(new PlayerSearchResult
-                                {
-                                    DisplayName = playerResult.Response[0].BungieGlobalDisplayName + "#" + playerResult.Response[0].BungieGlobalDisplayNameCode,
-                                    // Set other properties as needed
-                                });
-                            }
 
+                    if (match.Success)
+                    {
+                        var playerResult = await D2CharacterTracker.client.ApiAccess.Destiny2.SearchDestinyPlayerByBungieName(
+                            BungieMembershipType.All,
+                            new DotNetBungieAPI.Models.Requests.ExactSearchRequest()
+                            {
+                                DisplayName = match.Groups[1].Value,
+                                DisplayNameCode = short.Parse(match.Groups[2].Value)
+                            });
+                        if (playerResult.Response != null && playerResult.Response.Count != 0)
+                        {
+                            resultsBag.Add(new PlayerSearchResult
+                            {
+                                DisplayName = playerResult.Response[0].BungieGlobalDisplayName + "#" + playerResult.Response[0].BungieGlobalDisplayNameCode,
+                                // Set other properties as needed
+                            });
                         }
+
                     }
+
 
                 }, _searchCancellationTokenSource.Token);
 
